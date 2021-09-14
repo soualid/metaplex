@@ -12,6 +12,7 @@ import { CACHE_PATH, CONFIG_ARRAY_START, CONFIG_LINE_SIZE, EXTENSION_JSON, EXTEN
 import { getCandyMachineAddress, loadAnchorProgram, loadWalletKey, } from './helpers/accounts';
 import { Config } from './types';
 import { upload } from './commands/upload';
+import { initializeTemplatedMetadataConfiguration } from './commands/template';
 import { loadCache, saveCache } from './helpers/cache';
 import { mint } from "./commands/mint";
 import { signAllUnapprovedMetadata, signMetadata } from "./commands/sign";
@@ -24,6 +25,27 @@ if (!fs.existsSync(CACHE_PATH)) {
 }
 
 log.setLevel(log.levels.INFO);
+
+programCommand('initialize_templated_metadata')
+  .argument(
+    '<metadata-template.json>',
+    'A file containing the metadata template, using {i} as an index placeholder',
+  )
+  .option(
+    '-u, --uri-template <string>',
+    'URI template for metadatas, using {i} as an index placeholder, ie: https://some_server/ipfs/metadatas/{i}.json',
+  )
+  .action(async (templatePath, _, cmd) => {
+    console.log('starting templated metadatas configuration generation');
+    const { keypair, env, uriTemplate, cacheName } = cmd.opts();
+    initializeTemplatedMetadataConfiguration(
+      templatePath,
+      uriTemplate,
+      cacheName,
+      env,
+      keypair,
+    );
+  });
 
 programCommand('upload')
   .argument(
@@ -148,8 +170,10 @@ programCommand('create_candy_machine')
   .option('-p, --price <string>', 'Price denominated in SOL or spl-token override', '1')
   .option('-t, --spl-token <string>', 'SPL token used to price NFT mint. To use SOL leave this empty.')
   .option('-t, --spl-token-account <string>', 'SPL token account that receives mint payments. Only required if spl-token is specified.')
+  .option('-n, --item-count <number>', 'Number of NFT in the candy machine (for templated metadatas)',
+  )
   .action(async (directory, cmd) => {
-    const { keypair, env, price, cacheName, splToken, splTokenAccount } = cmd.opts();
+    const { keypair, env, price, cacheName, itemCount, splToken, splTokenAccount } = cmd.opts();
 
     let parsedPrice = parsePrice(price);
     const cacheContent = loadCache(cacheName, env);
@@ -198,12 +222,21 @@ programCommand('create_candy_machine')
       config,
       cacheContent.program.uuid,
     );
+    if (cacheContent.isTemplated && itemCount == null) {
+      console.warn(
+        'the --item-count parameter is mandatory for templated metadatas candy machines',
+      );
+      process.exit(1);
+    }
+    const itemsAvailable = cacheContent.isTemplated
+      ? itemCount
+      : Object.keys(cacheContent.items).length;
     await anchorProgram.rpc.initializeCandyMachine(
       bump,
       {
         uuid: cacheContent.program.uuid,
         price: new anchor.BN(parsedPrice),
-        itemsAvailable: new anchor.BN(Object.keys(cacheContent.items).length),
+        itemsAvailable: new anchor.BN(itemsAvailable),
         goLiveDate: null,
       },
       {
