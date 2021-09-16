@@ -180,7 +180,7 @@ programCommand('create_candy_machine')
 
     const walletKeyPair = loadWalletKey(keypair);
     const anchorProgram = await loadAnchorProgram(walletKeyPair, env);
-
+    
     let wallet = walletKeyPair.publicKey;
     const remainingAccounts = [];
     if (splToken || splTokenAccount) {
@@ -231,6 +231,9 @@ programCommand('create_candy_machine')
     const itemsAvailable = cacheContent.isTemplated
       ? itemCount
       : Object.keys(cacheContent.items).length;
+
+      console.log("almazkemlaklmzkea", candyMachine.toBase58(), bump)
+      try {
     await anchorProgram.rpc.initializeCandyMachine(
       bump,
       {
@@ -253,6 +256,10 @@ programCommand('create_candy_machine')
         remainingAccounts,
       },
     );
+      } catch (err) {
+        console.log('a--')
+        console.log(err)
+      }
 
     saveCache(cacheName, env, cacheContent);
     log.info(`create_candy_machine finished. candy machine pubkey: ${candyMachine.toBase58()}`);

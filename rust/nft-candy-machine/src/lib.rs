@@ -26,6 +26,7 @@ pub mod nft_candy_machine {
     };
 
     use super::*;
+    use std::cmp::max;
 
     pub fn mint_nft<'info>(ctx: Context<'_, '_, '_, 'info, MintNFT<'info>>) -> ProgramResult {
         let candy_machine = &mut ctx.accounts.candy_machine;
@@ -92,10 +93,10 @@ pub mod nft_candy_machine {
                 ],
             )?;
         }
-
+        let is_templated_metadata = config.data.max_number_of_lines == 0;
         let config_line = get_config_line(
             &config.to_account_info(),
-            config.data.is_templated_metadata,
+            is_templated_metadata,
             candy_machine.items_redeemed as usize,
         )?;
 
@@ -232,15 +233,19 @@ pub mod nft_candy_machine {
     }
 
     pub fn initialize_config(ctx: Context<InitializeConfig>, data: ConfigData) -> ProgramResult {
+
         let config_info = &mut ctx.accounts.config;
         if data.uuid.len() != 6 {
             return Err(ErrorCode::UuidMustBeExactly6Length.into());
         }
 
+        msg!("authority: {}", ctx.accounts.authority.key.to_string());
         let mut config = Config {
             data,
             authority: *ctx.accounts.authority.key,
         };
+
+        msg!("max number {}", config.data.max_number_of_lines);
 
         let mut array_of_zeroes = vec![];
         while array_of_zeroes.len() < MAX_SYMBOL_LENGTH - config.data.symbol.len() {
@@ -258,16 +263,23 @@ pub mod nft_candy_machine {
         let mut new_data = Config::discriminator().try_to_vec().unwrap();
         new_data.append(&mut config.try_to_vec().unwrap());
         let mut data = config_info.data.borrow_mut();
+
         // god forgive me couldnt think of better way to deal with this
         for i in 0..new_data.len() {
             data[i] = new_data[i];
         }
 
+        msg!("len {} {}", new_data.len(), data.len());
+
+        let max_number_of_lines = match config.data.max_number_of_lines {
+            u32::MAX => 1,
+            0 => 1,
+            _ => config.data.max_number_of_lines
+        };
+        msg!("max number of lines after {}", max_number_of_lines);
         let vec_start =
-            CONFIG_ARRAY_START + 4 + (config.data.max_number_of_lines as usize) * CONFIG_LINE_SIZE;
-        let as_bytes = (config
-            .data
-            .max_number_of_lines
+                CONFIG_ARRAY_START + 4 + (max_number_of_lines as usize) * CONFIG_LINE_SIZE;
+        let as_bytes = (max_number_of_lines
             .checked_div(8)
             .ok_or(ErrorCode::NumericalOverflowError)? as u32)
             .to_le_bytes();
@@ -290,7 +302,10 @@ pub mod nft_candy_machine {
 
         let mut fixed_config_lines = vec![];
 
-        if index > config.data.max_number_of_lines - 1 {
+        msg!("add config lane size {}", config.data.max_number_of_lines);
+        let max_number_of_lines = max(config.data.max_number_of_lines, 1);
+
+        if index > max_number_of_lines - 1 {
             return Err(ErrorCode::IndexGreaterThanLength.into());
         }
 
@@ -321,11 +336,12 @@ pub mod nft_candy_machine {
 
         let bit_mask_vec_start = CONFIG_ARRAY_START
             + 4
-            + (config.data.max_number_of_lines as usize) * CONFIG_LINE_SIZE
+            + (index as usize + config_lines.len() as usize) * CONFIG_LINE_SIZE
             + 4;
 
         let mut new_count = current_count;
         for i in 0..fixed_config_lines.len() {
+            msg!("--> {}", i);
             let position = (index as usize)
                 .checked_add(i)
                 .ok_or(ErrorCode::NumericalOverflowError)?;
@@ -371,7 +387,9 @@ pub mod nft_candy_machine {
         bump: u8,
         data: CandyMachineData,
     ) -> ProgramResult {
+        msg!("-- 0 --");
         let candy_machine = &mut ctx.accounts.candy_machine;
+        msg!("-- 1 --");
 
         if data.uuid.len() != 6 {
             return Err(ErrorCode::UuidMustBeExactly6Length.into());
@@ -380,6 +398,7 @@ pub mod nft_candy_machine {
         candy_machine.wallet = *ctx.accounts.wallet.key;
         candy_machine.authority = *ctx.accounts.authority.key;
         candy_machine.config = ctx.accounts.config.key();
+
         candy_machine.bump = bump;
         if ctx.remaining_accounts.len() > 0 {
             let token_mint_info = &ctx.remaining_accounts[0];
@@ -389,6 +408,7 @@ pub mod nft_candy_machine {
             assert_owned_by(&token_mint_info, &spl_token::id())?;
             assert_owned_by(&ctx.accounts.wallet, &spl_token::id())?;
 
+            msg!("-- 2 --");
             if token_account.mint != *token_mint_info.key {
                 return Err(ErrorCode::MintMismatch.into());
             }
@@ -396,13 +416,17 @@ pub mod nft_candy_machine {
             candy_machine.token_mint = Some(*token_mint_info.key);
         }
 
+        let is_templated_metadata = ctx.accounts.config.data.max_number_of_lines == 0;
+        msg!("-- 3 -- {} - {}", ctx.accounts.config.data.max_number_of_lines, is_templated_metadata);
         if get_config_count(&ctx.accounts.config.to_account_info().data.borrow())?
             < candy_machine.data.items_available as usize
-            && ctx.accounts.config.data.is_templated_metadata != true
+            && is_templated_metadata != true
         {
+            msg!("-- 4 --");
             return Err(ErrorCode::ConfigLineMismatch.into());
         }
-        let _config_line = match get_config_line(&ctx.accounts.config.to_account_info(), ctx.accounts.config.data.is_templated_metadata, 0) {
+        msg!("-- 5 --");
+        let _config_line = match get_config_line(&ctx.accounts.config.to_account_info(), is_templated_metadata, 0) {
             Ok(val) => val,
             Err(_) => return Err(ErrorCode::ConfigMustHaveAtleastOneEntry.into()),
         };
@@ -527,8 +551,7 @@ pub const CONFIG_ARRAY_START: usize = 32 + // authority
 8 + //max supply
 1 + // is mutable
 1 + // retain authority
-4 + // max number of lines
-1; // is templated;
+4; // max number of lines
 
 #[account]
 #[derive(Default)]
@@ -552,8 +575,7 @@ pub struct ConfigData {
     pub max_supply: u64,
     pub is_mutable: bool,
     pub retain_authority: bool,
-    pub max_number_of_lines: u32,
-    pub is_templated_metadata: bool,
+    pub max_number_of_lines: u32
 }
 
 pub fn get_config_count(data: &Ref<&mut [u8]>) -> core::result::Result<usize, ProgramError> {
@@ -576,18 +598,22 @@ pub fn get_config_line(
 
     let total = get_config_count(&arr)?;
     if index > total {
+        msg!("--- 6 --- {} {}", index, total);
         return Err(ErrorCode::IndexGreaterThanLength.into());
     }
+    msg!("--- 7 --- {} {}", is_templated_metadatas, index);
     let data_array = &arr[CONFIG_ARRAY_START + 4 + index * (CONFIG_LINE_SIZE)
         ..CONFIG_ARRAY_START + 4 + (index + 1) * (CONFIG_LINE_SIZE)];
 
     let config_line: ConfigLine = ConfigLine::try_from_slice(data_array)?;
     if is_templated_metadatas {
+        msg!("--- 8 ---");
         Ok(ConfigLine {
             name: config_line.name.replace("{i}", requested_index.to_string().as_str()).to_string(),
             uri: config_line.uri.replace("{i}", requested_index.to_string().as_str()).to_string(),
         })
     } else {
+        msg!("--- 9 ---");
         Ok(config_line)
     }
 }

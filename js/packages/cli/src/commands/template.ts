@@ -53,13 +53,12 @@ export async function initializeTemplatedMetadataConfiguration(templatePath:stri
     const anchorProgram = await loadAnchorProgram(walletKeyPair, env);
 
     const res = await createConfig(anchorProgram, walletKeyPair, {
-      maxNumberOfLines: new BN(1), // only the template is stored on chain
+      maxNumberOfLines: new BN(0), // triggers templated metadata generation mechanism
       symbol: manifest.symbol,
       sellerFeeBasisPoints: manifest.seller_fee_basis_points,
       isMutable: true,
       maxSupply: new BN(0),
       retainAuthority: true,
-      isTemplatedMetadata: true,
       creators: manifest.properties.creators.map(creator => {
         return {
           address: new PublicKey(creator.address),

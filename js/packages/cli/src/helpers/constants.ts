@@ -2,11 +2,21 @@ import { PublicKey } from '@solana/web3.js';
 
 export const CANDY_MACHINE = 'candy_machine';
 
-export const ARWEAVE_PAYMENT_WALLET = new PublicKey('HvwC9QSAzvGXhhVrgPmauVwFWcYZhne3hVot9EbHuFTm');
-export const CANDY_MACHINE_PROGRAM_ID = new PublicKey('cndyAnrLdpjq1Ssp1z8xxDsB8dxe7u4HL5Nxi2K5WXZ');
-export const TOKEN_METADATA_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
-export const SPL_ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
-export const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+export const ARWEAVE_PAYMENT_WALLET = new PublicKey(
+  'HvwC9QSAzvGXhhVrgPmauVwFWcYZhne3hVot9EbHuFTm',
+);
+export const CANDY_MACHINE_PROGRAM_ID = new PublicKey(
+  '7UbfUj3jFMj9bBS9ruNNpRPChpaqKFiqHq8bq9EWqz5R',
+);
+export const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
+  'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s',
+);
+export const SPL_ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID = new PublicKey(
+  'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+);
+export const TOKEN_PROGRAM_ID = new PublicKey(
+  'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+);
 
 export const CONFIG_ARRAY_START =
   32 + // authority
@@ -21,8 +31,8 @@ export const CONFIG_ARRAY_START =
   8 + //max supply
   1 + //is mutable
   1 + // retain authority
-  4 + // max number of lines
-  1; // is templated
+  4; // max number of lines;
+
 export const CONFIG_LINE_SIZE = 4 + 32 + 4 + 200;
 
 export const CACHE_PATH = './.cache';

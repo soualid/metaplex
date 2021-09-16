@@ -23,7 +23,6 @@ export const createConfig = async function (
     isMutable: boolean;
     maxSupply: BN;
     retainAuthority: boolean;
-    isTemplatedMetadata: boolean;
     creators: {
       address: PublicKey;
       verified: boolean;
@@ -33,34 +32,36 @@ export const createConfig = async function (
 ) {
   const configAccount = Keypair.generate();
   const uuid = uuidFromConfigPubkey(configAccount.publicKey);
-
+  console.log('config creation')
+  const txId = await anchorProgram.rpc.initializeConfig(
+    {
+      uuid,
+      ...configData,
+    },
+    {
+      accounts: {
+        config: configAccount.publicKey,
+        authority: payerWallet.publicKey,
+        payer: payerWallet.publicKey,
+        systemProgram: SystemProgram.programId,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+      },
+      signers: [payerWallet, configAccount],
+      instructions: [
+        await createConfigAccount(
+          anchorProgram,
+          configData,
+          payerWallet.publicKey,
+          configAccount.publicKey,
+        ),
+      ],
+    },
+  )
+  console.log('config created')
   return {
     config: configAccount.publicKey,
     uuid,
-    txId: await anchorProgram.rpc.initializeConfig(
-      {
-        uuid,
-        ...configData,
-      },
-      {
-        accounts: {
-          config: configAccount.publicKey,
-          authority: payerWallet.publicKey,
-          payer: payerWallet.publicKey,
-          systemProgram: SystemProgram.programId,
-          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-        },
-        signers: [payerWallet, configAccount],
-        instructions: [
-          await createConfigAccount(
-            anchorProgram,
-            configData,
-            payerWallet.publicKey,
-            configAccount.publicKey,
-          ),
-        ],
-      },
-    ),
+    txId,
   };
 };
 
