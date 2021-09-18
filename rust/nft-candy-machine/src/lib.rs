@@ -30,6 +30,9 @@ pub mod nft_candy_machine {
     pub fn mint_nft<'info>(ctx: Context<'_, '_, '_, 'info, MintNFT<'info>>) -> ProgramResult {
         let candy_machine = &mut ctx.accounts.candy_machine;
         let config = &ctx.accounts.config;
+        let template_config = &ctx.accounts.template_config;
+        msg!("template {}", template_config.data.name_template);
+        let is_templated_metadata = true;
         let clock = &ctx.accounts.clock;
 
         match candy_machine.data.go_live_date {
@@ -95,7 +98,7 @@ pub mod nft_candy_machine {
 
         let config_line = get_config_line(
             &config.to_account_info(),
-            config.data.is_templated_metadata,
+            template_config.data.clone(),
             candy_machine.items_redeemed as usize,
         )?;
 
@@ -231,12 +234,22 @@ pub mod nft_candy_machine {
         Ok(())
     }
 
+    pub fn initialize_template_config(ctx: Context<InitializeTemplateConfig>, template_data: TemplateConfigData) -> ProgramResult {
+        let template_config_info = &mut ctx.accounts.template_config;
+        // template_config_info.data = template_data;
+        // template_config_info.data.name_template = "test".to_string();
+        template_config_info.data = template_data.clone();
+        msg!("aaa {}", template_data.name_template.clone());
+        msg!("bbb {}", template_config_info.data.name_template);
+        msg!("ccc {}", template_config_info.try_to_vec().unwrap().len());
+        Ok(())
+    }
+
     pub fn initialize_config(ctx: Context<InitializeConfig>, data: ConfigData) -> ProgramResult {
         let config_info = &mut ctx.accounts.config;
         if data.uuid.len() != 6 {
             return Err(ErrorCode::UuidMustBeExactly6Length.into());
         }
-
         let mut config = Config {
             data,
             authority: *ctx.accounts.authority.key,
@@ -366,13 +379,21 @@ pub mod nft_candy_machine {
         Ok(())
     }
 
+    pub fn initialize_templated_candy_machine(
+        ctx: Context<InitializeCandyMachine>,
+        bump: u8,
+        data: CandyMachineData,
+    ) -> ProgramResult {
+        Ok(())
+    }
+
     pub fn initialize_candy_machine(
         ctx: Context<InitializeCandyMachine>,
         bump: u8,
         data: CandyMachineData,
     ) -> ProgramResult {
         let candy_machine = &mut ctx.accounts.candy_machine;
-
+        let template_config = ctx.accounts.template_config.data.clone();
         if data.uuid.len() != 6 {
             return Err(ErrorCode::UuidMustBeExactly6Length.into());
         }
@@ -398,11 +419,11 @@ pub mod nft_candy_machine {
 
         if get_config_count(&ctx.accounts.config.to_account_info().data.borrow())?
             < candy_machine.data.items_available as usize
-            && ctx.accounts.config.data.is_templated_metadata != true
+            && false
         {
             return Err(ErrorCode::ConfigLineMismatch.into());
         }
-        let _config_line = match get_config_line(&ctx.accounts.config.to_account_info(), ctx.accounts.config.data.is_templated_metadata, 0) {
+        let _config_line = match get_config_line(&ctx.accounts.config.to_account_info(), template_config, 0) {
             Ok(val) => val,
             Err(_) => return Err(ErrorCode::ConfigMustHaveAtleastOneEntry.into()),
         };
@@ -420,6 +441,7 @@ pub struct InitializeCandyMachine<'info> {
     wallet: AccountInfo<'info>,
     #[account(has_one=authority)]
     config: ProgramAccount<'info, Config>,
+    template_config: ProgramAccount<'info, TemplateConfig>,
     #[account(signer, constraint= authority.data_is_empty() && authority.lamports() > 0)]
     authority: AccountInfo<'info>,
     #[account(mut, signer)]
@@ -441,6 +463,21 @@ pub struct InitializeConfig<'info> {
     rent: Sysvar<'info, Rent>,
 }
 
+
+#[derive(Accounts)]
+#[instruction(template_data: TemplateConfigData)]
+pub struct InitializeTemplateConfig<'info> {
+    #[account(init, payer=payer, space=8+32+template_data.name_template.len()+template_data.uri_template.len()+8)]
+    template_config: ProgramAccount<'info, TemplateConfig>,
+    #[account(constraint= authority.data_is_empty() && authority.lamports() > 0 )]
+    authority: AccountInfo<'info>,
+    #[account(mut, signer)]
+    payer: AccountInfo<'info>,
+    rent: Sysvar<'info, Rent>,
+    #[account(address = system_program::ID)]
+    system_program: AccountInfo<'info>,
+}
+
 #[derive(Accounts)]
 pub struct AddConfigLines<'info> {
     #[account(mut, has_one = authority)]
@@ -452,6 +489,7 @@ pub struct AddConfigLines<'info> {
 #[derive(Accounts)]
 pub struct MintNFT<'info> {
     config: ProgramAccount<'info, Config>,
+    template_config: ProgramAccount<'info, TemplateConfig>,
     #[account(
         mut,
         has_one = config,
@@ -527,8 +565,7 @@ pub const CONFIG_ARRAY_START: usize = 32 + // authority
 8 + //max supply
 1 + // is mutable
 1 + // retain authority
-4 + // max number of lines
-1; // is templated;
+4; // max number of lines;
 
 #[account]
 #[derive(Default)]
@@ -539,6 +576,13 @@ pub struct Config {
     // There is actually lines and lines of data after this but we explicitly never want them deserialized.
     // here there is a borsh vec u32 indicating number of bytes in bitmask array.
     // here there is a number of bytes equal to ceil(max_number_of_lines/8) and it is a bit mask used to figure out when to increment borsh vec u32
+}
+
+#[account]
+#[derive(Default)]
+pub struct TemplateConfig {
+    pub authority: Pubkey,
+    pub data: TemplateConfigData,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
@@ -553,7 +597,12 @@ pub struct ConfigData {
     pub is_mutable: bool,
     pub retain_authority: bool,
     pub max_number_of_lines: u32,
-    pub is_templated_metadata: bool,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct TemplateConfigData {
+    pub name_template: String,
+    pub uri_template: String
 }
 
 pub fn get_config_count(data: &Ref<&mut [u8]>) -> core::result::Result<usize, ProgramError> {
@@ -562,16 +611,17 @@ pub fn get_config_count(data: &Ref<&mut [u8]>) -> core::result::Result<usize, Pr
 
 pub fn get_config_line(
     a: &AccountInfo,
-    is_templated_metadatas:bool,
-    in_index: usize,
+    template_configuration:TemplateConfigData,
+    index: usize,
 ) -> core::result::Result<ConfigLine, ProgramError> {
 
-    let requested_index:usize = in_index + 1;
-    let index:usize = match is_templated_metadatas {
-        true => 0,
-        false => in_index
-    };
-
+    if true {
+        let requested_index:usize = index + 1;
+        return Ok(ConfigLine {
+            name: template_configuration.name_template.replace("{i}", requested_index.to_string().as_str()).to_string(),
+            uri: template_configuration.uri_template.replace("{i}", requested_index.to_string().as_str()).to_string(),
+        });
+    }
     let arr = a.data.borrow();
 
     let total = get_config_count(&arr)?;
@@ -582,14 +632,7 @@ pub fn get_config_line(
         ..CONFIG_ARRAY_START + 4 + (index + 1) * (CONFIG_LINE_SIZE)];
 
     let config_line: ConfigLine = ConfigLine::try_from_slice(data_array)?;
-    if is_templated_metadatas {
-        Ok(ConfigLine {
-            name: config_line.name.replace("{i}", requested_index.to_string().as_str()).to_string(),
-            uri: config_line.uri.replace("{i}", requested_index.to_string().as_str()).to_string(),
-        })
-    } else {
-        Ok(config_line)
-    }
+    Ok(config_line)
 }
 
 pub const CONFIG_LINE_SIZE: usize = 4 + MAX_NAME_LENGTH + 4 + MAX_URI_LENGTH;
