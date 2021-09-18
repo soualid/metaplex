@@ -95,7 +95,7 @@ pub mod nft_candy_machine {
 
         let config_line = get_config_line(
             &config.to_account_info(),
-            config.data.is_templated_metadata,
+            false, // TODO
             candy_machine.items_redeemed as usize,
         )?;
 
@@ -228,6 +228,55 @@ pub mod nft_candy_machine {
             msg!("Go live date changed to {}", go_l);
             candy_machine.data.go_live_date = Some(go_l)
         }
+        Ok(())
+    }
+
+    pub fn initialize_config_v2(ctx: Context<InitializeConfigV2>, data: ConfigDataV2) -> ProgramResult {
+        // I don't like to see all this code duplicated but cannot find a better way
+
+        let config_info = &mut ctx.accounts.config;
+        if data.uuid.len() != 6 {
+            return Err(ErrorCode::UuidMustBeExactly6Length.into());
+        }
+
+        let mut config = ConfigV2 {
+            data,
+            authority: *ctx.accounts.authority.key,
+        };
+
+        let mut array_of_zeroes = vec![];
+        while array_of_zeroes.len() < MAX_SYMBOL_LENGTH - config.data.symbol.len() {
+            array_of_zeroes.push(0u8);
+        }
+        let new_symbol =
+            config.data.symbol.clone() + std::str::from_utf8(&array_of_zeroes).unwrap();
+        config.data.symbol = new_symbol;
+
+        // - 1 because we are going to be a creator
+        if config.data.creators.len() > MAX_CREATOR_LIMIT - 1 {
+            return Err(ErrorCode::TooManyCreators.into());
+        }
+
+        let mut new_data = ConfigV2::discriminator().try_to_vec().unwrap();
+        new_data.append(&mut config.try_to_vec().unwrap());
+        let mut data = config_info.data.borrow_mut();
+        // god forgive me couldnt think of better way to deal with this
+        for i in 0..new_data.len() {
+            data[i] = new_data[i];
+        }
+
+        let vec_start =
+            CONFIG_V2_ARRAY_START + 4 + (config.data.max_number_of_lines as usize) * CONFIG_LINE_SIZE;
+        let as_bytes = (config
+            .data
+            .max_number_of_lines
+            .checked_div(8)
+            .ok_or(ErrorCode::NumericalOverflowError)? as u32)
+            .to_le_bytes();
+        for i in 0..4 {
+            data[vec_start + i] = as_bytes[i]
+        }
+
         Ok(())
     }
 
@@ -398,11 +447,11 @@ pub mod nft_candy_machine {
 
         if get_config_count(&ctx.accounts.config.to_account_info().data.borrow())?
             < candy_machine.data.items_available as usize
-            && ctx.accounts.config.data.is_templated_metadata != true
+            // TODO && ctx.accounts.config.data.is_templated_metadata != true
         {
             return Err(ErrorCode::ConfigLineMismatch.into());
         }
-        let _config_line = match get_config_line(&ctx.accounts.config.to_account_info(), ctx.accounts.config.data.is_templated_metadata, 0) {
+        let _config_line = match get_config_line(&ctx.accounts.config.to_account_info(),  false /* TODO ctx.accounts.config.data.is_templated_metadata */, 0) {
             Ok(val) => val,
             Err(_) => return Err(ErrorCode::ConfigMustHaveAtleastOneEntry.into()),
         };
@@ -430,8 +479,38 @@ pub struct InitializeCandyMachine<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(bump: u8, data: CandyMachineData)]
+pub struct InitializeCandyMachineV2<'info> {
+    #[account(init, seeds=[PREFIX.as_bytes(), config.key().as_ref(), data.uuid.as_bytes()], payer=payer, bump=bump, space=8+32+32+33+32+64+64+64+200)]
+    candy_machine: ProgramAccount<'info, CandyMachine>,
+    #[account(constraint= wallet.owner == &spl_token::id() || (wallet.data_is_empty() && wallet.lamports() > 0) )]
+    wallet: AccountInfo<'info>,
+    #[account(has_one=authority)]
+    config: ProgramAccount<'info, ConfigV2>,
+    #[account(signer, constraint= authority.data_is_empty() && authority.lamports() > 0)]
+    authority: AccountInfo<'info>,
+    #[account(mut, signer)]
+    payer: AccountInfo<'info>,
+    #[account(address = system_program::ID)]
+    system_program: AccountInfo<'info>,
+    rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
 #[instruction(data: ConfigData)]
 pub struct InitializeConfig<'info> {
+    #[account(mut, constraint= config.to_account_info().owner == program_id && config.to_account_info().data_len() >= CONFIG_ARRAY_START+4+(data.max_number_of_lines as usize)*CONFIG_LINE_SIZE + 4 + (data.max_number_of_lines.checked_div(8).ok_or(ErrorCode::NumericalOverflowError)? as usize))]
+    config: AccountInfo<'info>,
+    #[account(constraint= authority.data_is_empty() && authority.lamports() > 0 )]
+    authority: AccountInfo<'info>,
+    #[account(mut, signer)]
+    payer: AccountInfo<'info>,
+    rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+#[instruction(data: ConfigDataV2)]
+pub struct InitializeConfigV2<'info> {
     #[account(mut, constraint= config.to_account_info().owner == program_id && config.to_account_info().data_len() >= CONFIG_ARRAY_START+4+(data.max_number_of_lines as usize)*CONFIG_LINE_SIZE + 4 + (data.max_number_of_lines.checked_div(8).ok_or(ErrorCode::NumericalOverflowError)? as usize))]
     config: AccountInfo<'info>,
     #[account(constraint= authority.data_is_empty() && authority.lamports() > 0 )]
@@ -527,6 +606,17 @@ pub const CONFIG_ARRAY_START: usize = 32 + // authority
 8 + //max supply
 1 + // is mutable
 1 + // retain authority
+4; // max number of lines;
+
+
+pub const CONFIG_V2_ARRAY_START: usize = 32 + // authority
+4 + 6 + // uuid + u32 len
+4 + MAX_SYMBOL_LENGTH + // u32 len + symbol
+2 + // seller fee basis points
+1 + 4 + MAX_CREATOR_LIMIT*MAX_CREATOR_LEN + // optional + u32 len + actual vec
+8 + //max supply
+1 + // is mutable
+1 + // retain authority
 4 + // max number of lines
 1; // is templated;
 
@@ -541,8 +631,20 @@ pub struct Config {
     // here there is a number of bytes equal to ceil(max_number_of_lines/8) and it is a bit mask used to figure out when to increment borsh vec u32
 }
 
+
+#[account]
+#[derive(Default)]
+pub struct ConfigV2 {
+    pub authority: Pubkey,
+    pub data: ConfigDataV2,
+    // there's a borsh vec u32 denoting how many actual lines of data there are currently (eventually equals max number of lines)
+    // There is actually lines and lines of data after this but we explicitly never want them deserialized.
+    // here there is a borsh vec u32 indicating number of bytes in bitmask array.
+    // here there is a number of bytes equal to ceil(max_number_of_lines/8) and it is a bit mask used to figure out when to increment borsh vec u32
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-pub struct ConfigData {
+pub struct ConfigDataV2 {
     pub uuid: String,
     /// The symbol for the asset
     pub symbol: String,
@@ -554,6 +656,20 @@ pub struct ConfigData {
     pub retain_authority: bool,
     pub max_number_of_lines: u32,
     pub is_templated_metadata: bool,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct ConfigData {
+    pub uuid: String,
+    /// The symbol for the asset
+    pub symbol: String,
+    /// Royalty basis points that goes to creators in secondary sales (0-10000)
+    pub seller_fee_basis_points: u16,
+    pub creators: Vec<Creator>,
+    pub max_supply: u64,
+    pub is_mutable: bool,
+    pub retain_authority: bool,
+    pub max_number_of_lines: u32
 }
 
 pub fn get_config_count(data: &Ref<&mut [u8]>) -> core::result::Result<usize, ProgramError> {
@@ -591,6 +707,7 @@ pub fn get_config_line(
         Ok(config_line)
     }
 }
+
 
 pub const CONFIG_LINE_SIZE: usize = 4 + MAX_NAME_LENGTH + 4 + MAX_URI_LENGTH;
 #[derive(AnchorSerialize, AnchorDeserialize, Debug)]
