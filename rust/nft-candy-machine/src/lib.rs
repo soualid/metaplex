@@ -30,6 +30,9 @@ pub mod nft_candy_machine {
     pub fn mint_nft<'info>(ctx: Context<'_, '_, '_, 'info, MintNFT<'info>>) -> ProgramResult {
         let candy_machine = &mut ctx.accounts.candy_machine;
         let config = &ctx.accounts.config;
+
+        let data = config.datas();
+
         let clock = &ctx.accounts.clock;
 
         match candy_machine.data.go_live_date {
@@ -120,7 +123,8 @@ pub mod nft_candy_machine {
                 share: 0,
             }];
 
-        for c in &config.data.creators {
+
+        for c in data.creators {
             creators.push(spl_token_metadata::state::Creator {
                 address: c.address,
                 verified: false,
@@ -162,12 +166,12 @@ pub mod nft_candy_machine {
                 *ctx.accounts.payer.key,
                 candy_machine.key(),
                 config_line.name,
-                config.data.symbol.clone(),
+                data.symbol.clone(),
                 config_line.uri,
                 Some(creators),
-                config.data.seller_fee_basis_points,
+                data.seller_fee_basis_points,
                 false,
-                config.data.is_mutable,
+                data.is_mutable,
             ),
             metadata_infos.as_slice(),
             &[&authority_seeds],
@@ -182,7 +186,7 @@ pub mod nft_candy_machine {
                 *ctx.accounts.mint_authority.key,
                 *ctx.accounts.metadata.key,
                 *ctx.accounts.payer.key,
-                Some(config.data.max_supply),
+                Some(data.max_supply),
             ),
             master_edition_infos.as_slice(),
             &[&authority_seeds],
@@ -190,7 +194,7 @@ pub mod nft_candy_machine {
 
         let mut new_update_authority = Some(candy_machine.authority);
 
-        if !ctx.accounts.config.data.retain_authority {
+        if !data.retain_authority {
             new_update_authority = Some(ctx.accounts.update_authority.key());
         }
 
@@ -233,34 +237,38 @@ pub mod nft_candy_machine {
     }
 
     pub fn initialize_config(ctx: Context<InitializeConfig>, data: ConfigData) -> ProgramResult {
-        return initialize_config_v2(ctx, data, false)
+        let data_v2 = ConfigDataV2 {
+            v1: data,
+            templated: false
+        };
+        return initialize_config_v2(ctx, data_v2)
     }
 
-    pub fn initialize_config_v2(ctx: Context<InitializeConfig>, data: ConfigData, templated:bool) -> ProgramResult {
+    pub fn initialize_config_v2(ctx: Context<InitializeConfig>, data: ConfigDataV2) -> ProgramResult {
         let config_info = &mut ctx.accounts.config;
-        if data.uuid.len() != 6 {
+        if data.v1.uuid.len() != 6 {
             return Err(ErrorCode::UuidMustBeExactly6Length.into());
         }
 
-        let mut config = Config {
+        let mut config = ConfigV2 {
             data,
             authority: *ctx.accounts.authority.key,
         };
 
         let mut array_of_zeroes = vec![];
-        while array_of_zeroes.len() < MAX_SYMBOL_LENGTH - config.data.symbol.len() {
+        while array_of_zeroes.len() < MAX_SYMBOL_LENGTH - config.data.v1.symbol.len() {
             array_of_zeroes.push(0u8);
         }
         let new_symbol =
-            config.data.symbol.clone() + std::str::from_utf8(&array_of_zeroes).unwrap();
-        config.data.symbol = new_symbol;
+            config.data.v1.symbol.clone() + std::str::from_utf8(&array_of_zeroes).unwrap();
+        config.data.v1.symbol = new_symbol;
 
         // - 1 because we are going to be a creator
-        if config.data.creators.len() > MAX_CREATOR_LIMIT - 1 {
+        if config.data.v1.creators.len() > MAX_CREATOR_LIMIT - 1 {
             return Err(ErrorCode::TooManyCreators.into());
         }
 
-        let mut new_data = Config::discriminator().try_to_vec().unwrap();
+        let mut new_data = ConfigV2::discriminator().try_to_vec().unwrap();
         new_data.append(&mut config.try_to_vec().unwrap());
         let mut data = config_info.data.borrow_mut();
         // god forgive me couldnt think of better way to deal with this
@@ -269,17 +277,17 @@ pub mod nft_candy_machine {
         }
 
         let vec_start =
-            CONFIG_ARRAY_START + 4 + (config.data.max_number_of_lines as usize) * CONFIG_LINE_SIZE;
+            CONFIG_ARRAY_START + 4 + (config.data.v1.max_number_of_lines as usize) * CONFIG_LINE_SIZE;
 
         // previous CLI versions used a smaller configuration account, that's why we must check
         // the configuration account size before writing this information
         let is_new_configuration = data.len() >= vec_start + 5;
         if is_new_configuration {
-            data[vec_start] = u8::from(templated);
+            data[vec_start] = u8::from(config.data.templated);
         }
 
         let as_bytes = (config
-            .data
+            .data.v1
             .max_number_of_lines
             .checked_div(8)
             .ok_or(ErrorCode::NumericalOverflowError)? as u32)
@@ -296,15 +304,19 @@ pub mod nft_candy_machine {
         index: u32,
         config_lines: Vec<ConfigLine>,
     ) -> ProgramResult {
-        let config = &mut ctx.accounts.config;
-        let account = config.to_account_info();
+        let generic_config = &mut ctx.accounts.config;
+        let account = generic_config.to_account_info();
+
+        let config = generic_config.datas();
+
         let current_count = get_config_count(&account.data.borrow())?;
         let mut data = account.data.borrow_mut();
         let is_new_configuration = data.len() >= CONFIG_ARRAY_START + 4 + (current_count as usize) * CONFIG_LINE_SIZE + 5;
         msg!("is_new_configuration: {} for {} and {} lines", is_new_configuration, data.len(), current_count);
         let mut fixed_config_lines = vec![];
 
-        if index > config.data.max_number_of_lines - 1 {
+
+        if index > config.max_number_of_lines - 1 {
             return Err(ErrorCode::IndexGreaterThanLength.into());
         }
 
@@ -336,7 +348,7 @@ pub mod nft_candy_machine {
         let shift = if is_new_configuration { 1 as usize } else { 0 as usize };
         let bit_mask_vec_start = CONFIG_ARRAY_START
             + 4
-            + (config.data.max_number_of_lines as usize) * CONFIG_LINE_SIZE
+            + (config.max_number_of_lines as usize) * CONFIG_LINE_SIZE
             + shift
             + 4;
         let mut new_count = current_count;
@@ -434,7 +446,7 @@ pub struct InitializeCandyMachine<'info> {
     candy_machine: ProgramAccount<'info, CandyMachine>,
     #[account(constraint= wallet.owner == &spl_token::id() || (wallet.data_is_empty() && wallet.lamports() > 0) )]
     wallet: AccountInfo<'info>,
-    #[account(has_one=authority)]
+    #[account()]
     config: ProgramAccount<'info, Config>,
     #[account(signer, constraint= authority.data_is_empty() && authority.lamports() > 0)]
     authority: AccountInfo<'info>,
@@ -459,7 +471,7 @@ pub struct InitializeConfig<'info> {
 
 #[derive(Accounts)]
 pub struct AddConfigLines<'info> {
-    #[account(mut, has_one = authority)]
+    #[account(mut)]
     config: ProgramAccount<'info, Config>,
     #[account(signer)]
     authority: AccountInfo<'info>,
@@ -547,15 +559,72 @@ pub const CONFIG_ARRAY_START: usize = 32 + // authority
 
 #[account]
 #[derive(Default)]
-pub struct Config {
+pub struct ConfigV1 {
     pub authority: Pubkey,
     pub data: ConfigData,
     // there's a borsh vec u32 denoting how many actual lines of data there are currently (eventually equals max number of lines)
     // There is actually lines and lines of data after this but we explicitly never want them deserialized.
-    // here there is a flag determining if a template is used to generate the configuration lines of this candy machine (warning: this flag did not exist in the previous versions of the configuration)
     // here there is a borsh vec u32 indicating number of bytes in bitmask array.
     // here there is a number of bytes equal to ceil(max_number_of_lines/8) and it is a bit mask used to figure out when to increment borsh vec u32
 }
+
+#[account]
+#[derive(Default)]
+pub struct ConfigV2 {
+    pub authority: Pubkey,
+    pub data: ConfigDataV2,
+    // there's a borsh vec u32 denoting how many actual lines of data there are currently (eventually equals max number of lines)
+    // There is actually lines and lines of data after this but we explicitly never want them deserialized.
+    // here there is a borsh vec u32 indicating number of bytes in bitmask array.
+    // here there is a number of bytes equal to ceil(max_number_of_lines/8) and it is a bit mask used to figure out when to increment borsh vec u32
+}
+
+#[derive(Clone)]
+pub enum Config {
+    V1(ConfigV1),
+    V2(ConfigV2),
+}
+trait GetDatas {
+    fn datas(&self) -> ConfigData;
+}
+impl GetDatas for Config {
+    fn datas(&self) -> ConfigData {
+        match self {
+            Config::V1(c) => c.data.clone(),
+            Config::V2(c) => c.data.clone().v1
+        }
+    }
+}
+impl AccountDeserialize for Config {
+    fn try_deserialize(buf: &mut &[u8]) -> core::result::Result<Self, ProgramError> {
+        if &buf[..8] == ConfigV1::discriminator() {
+            Ok(Config::V1(ConfigV1::try_deserialize(buf).unwrap()))
+        } else if &buf[..8] == ConfigV2::discriminator() {
+            Ok(Config::V2(ConfigV2::try_deserialize(buf).unwrap()))
+        } else {
+            Err(ErrorCode::Uninitialized.into())
+        }
+    }
+    fn try_deserialize_unchecked(buf: &mut &[u8]) -> core::result::Result<Self, ProgramError> {
+        if &buf[..8] == ConfigV1::discriminator() {
+            Ok(Config::V1(ConfigV1::try_deserialize_unchecked(buf).unwrap()))
+        } else if &buf[..8] == ConfigV2::discriminator() {
+            Ok(Config::V2(ConfigV2::try_deserialize_unchecked(buf).unwrap()))
+        } else {
+            Err(ErrorCode::Uninitialized.into())
+        }
+    }
+}
+
+impl AccountSerialize for Config {
+    fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> core::result::Result<(), ProgramError> {
+        match self {
+            Config::V1(c) => c.try_serialize(writer),
+            Config::V2(c) => c.try_serialize(writer)
+        }
+    }
+}
+
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
 pub struct ConfigData {
@@ -569,6 +638,13 @@ pub struct ConfigData {
     pub is_mutable: bool,
     pub retain_authority: bool,
     pub max_number_of_lines: u32
+}
+
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct ConfigDataV2 {
+    pub v1:ConfigData,
+    pub templated: bool
 }
 
 pub fn get_config_count(data: &Ref<&mut [u8]>) -> core::result::Result<usize, ProgramError> {
