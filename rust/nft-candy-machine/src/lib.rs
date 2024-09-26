@@ -93,8 +93,10 @@ pub mod nft_candy_machine {
             )?;
         }
 
+        let is_templated_metadata = is_config_templated(&ctx.accounts.config.to_account_info().data.borrow()).unwrap();
         let config_line = get_config_line(
             &config.to_account_info(),
+            is_templated_metadata,
             candy_machine.items_redeemed as usize,
         )?;
 
@@ -231,6 +233,10 @@ pub mod nft_candy_machine {
     }
 
     pub fn initialize_config(ctx: Context<InitializeConfig>, data: ConfigData) -> ProgramResult {
+        return initialize_config_v2(ctx, data, false)
+    }
+
+    pub fn initialize_config_v2(ctx: Context<InitializeConfig>, data: ConfigData, templated:bool) -> ProgramResult {
         let config_info = &mut ctx.accounts.config;
         if data.uuid.len() != 6 {
             return Err(ErrorCode::UuidMustBeExactly6Length.into());
@@ -264,16 +270,24 @@ pub mod nft_candy_machine {
 
         let vec_start =
             CONFIG_ARRAY_START + 4 + (config.data.max_number_of_lines as usize) * CONFIG_LINE_SIZE;
+
+        // previous CLI versions used a smaller configuration account, that's why we must check
+        // the configuration account size before writing this information
+        let is_new_configuration = data.len() >= vec_start + 5;
+        if is_new_configuration {
+            data[vec_start] = u8::from(templated);
+        }
+
         let as_bytes = (config
             .data
             .max_number_of_lines
             .checked_div(8)
             .ok_or(ErrorCode::NumericalOverflowError)? as u32)
             .to_le_bytes();
+        let shift = if is_new_configuration { 1 as usize } else { 0 as usize };
         for i in 0..4 {
-            data[vec_start + i] = as_bytes[i]
+            data[vec_start + i + shift] = as_bytes[i]
         }
-
         Ok(())
     }
 
@@ -286,7 +300,8 @@ pub mod nft_candy_machine {
         let account = config.to_account_info();
         let current_count = get_config_count(&account.data.borrow())?;
         let mut data = account.data.borrow_mut();
-
+        let is_new_configuration = data.len() >= CONFIG_ARRAY_START + 4 + (current_count as usize) * CONFIG_LINE_SIZE + 5;
+        msg!("is_new_configuration: {} for {} and {} lines", is_new_configuration, data.len(), current_count);
         let mut fixed_config_lines = vec![];
 
         if index > config.data.max_number_of_lines - 1 {
@@ -318,11 +333,12 @@ pub mod nft_candy_machine {
             &mut data[position..position + fixed_config_lines.len() * CONFIG_LINE_SIZE];
         array_slice.copy_from_slice(serialized);
 
+        let shift = if is_new_configuration { 1 as usize } else { 0 as usize };
         let bit_mask_vec_start = CONFIG_ARRAY_START
             + 4
             + (config.data.max_number_of_lines as usize) * CONFIG_LINE_SIZE
+            + shift
             + 4;
-
         let mut new_count = current_count;
         for i in 0..fixed_config_lines.len() {
             let position = (index as usize)
@@ -394,14 +410,15 @@ pub mod nft_candy_machine {
 
             candy_machine.token_mint = Some(*token_mint_info.key);
         }
-
+        let is_templated_metadata = is_config_templated(&ctx.accounts.config.to_account_info().data.borrow()).unwrap();
+        msg!("is_templated_metadata {}", is_templated_metadata);
         if get_config_count(&ctx.accounts.config.to_account_info().data.borrow())?
-            < candy_machine.data.items_available as usize
+            < candy_machine.data.items_available as usize &&
+            is_templated_metadata != true
         {
             return Err(ErrorCode::ConfigLineMismatch.into());
         }
-
-        let _config_line = match get_config_line(&ctx.accounts.config.to_account_info(), 0) {
+        let _config_line = match get_config_line(&ctx.accounts.config.to_account_info(), is_templated_metadata, 0) {
             Ok(val) => val,
             Err(_) => return Err(ErrorCode::ConfigMustHaveAtleastOneEntry.into()),
         };
@@ -535,6 +552,7 @@ pub struct Config {
     pub data: ConfigData,
     // there's a borsh vec u32 denoting how many actual lines of data there are currently (eventually equals max number of lines)
     // There is actually lines and lines of data after this but we explicitly never want them deserialized.
+    // here there is a flag determining if a template is used to generate the configuration lines of this candy machine (warning: this flag did not exist in the previous versions of the configuration)
     // here there is a borsh vec u32 indicating number of bytes in bitmask array.
     // here there is a number of bytes equal to ceil(max_number_of_lines/8) and it is a bit mask used to figure out when to increment borsh vec u32
 }
@@ -550,17 +568,43 @@ pub struct ConfigData {
     pub max_supply: u64,
     pub is_mutable: bool,
     pub retain_authority: bool,
-    pub max_number_of_lines: u32,
+    pub max_number_of_lines: u32
 }
 
 pub fn get_config_count(data: &Ref<&mut [u8]>) -> core::result::Result<usize, ProgramError> {
     return Ok(u32::from_le_bytes(*array_ref![data, CONFIG_ARRAY_START, 4]) as usize);
 }
+pub fn is_config_templated(data: &Ref<&mut [u8]>) -> core::result::Result<bool, ProgramError> {
+    // we have to check actual config size for backward compatibility since old configuration may not
+    // contain the "templated" flag which is now stored at the very end of the configuration data array
+    let config_count = get_config_count(data).unwrap();
+    let bitmask_size = config_count/8 + (config_count%8 != 0) as usize;
+    let templatable_config_expected_size = CONFIG_ARRAY_START + 4 +
+        config_count*CONFIG_LINE_SIZE +
+        1 +
+        4 +
+        bitmask_size;
+    msg!("templatable_config_expected_size {} current {} for {} lines", templatable_config_expected_size, data.len(), config_count);
+    if templatable_config_expected_size == data.len() {
+        let templated_pos = CONFIG_ARRAY_START + 4 + config_count*CONFIG_LINE_SIZE;
+        msg!("checking {} at {}", data[templated_pos], templated_pos);
+        return Ok(data[templated_pos] == 1);
+    }
+    return Ok(false);
+}
 
 pub fn get_config_line(
     a: &AccountInfo,
-    index: usize,
+    is_templated_metadatas:bool,
+    in_index: usize,
 ) -> core::result::Result<ConfigLine, ProgramError> {
+
+    let requested_index:usize = in_index + 1;
+    let index:usize = match is_templated_metadatas {
+        true => 0,
+        false => in_index
+    };
+
     let arr = a.data.borrow();
 
     let total = get_config_count(&arr)?;
@@ -571,8 +615,14 @@ pub fn get_config_line(
         ..CONFIG_ARRAY_START + 4 + (index + 1) * (CONFIG_LINE_SIZE)];
 
     let config_line: ConfigLine = ConfigLine::try_from_slice(data_array)?;
-
-    Ok(config_line)
+    if is_templated_metadatas {
+        Ok(ConfigLine {
+            name: config_line.name.replace("{i}", requested_index.to_string().as_str()).to_string(),
+            uri: config_line.uri.replace("{i}", requested_index.to_string().as_str()).to_string(),
+        })
+    } else {
+        Ok(config_line)
+    }
 }
 
 pub const CONFIG_LINE_SIZE: usize = 4 + MAX_NAME_LENGTH + 4 + MAX_URI_LENGTH;
